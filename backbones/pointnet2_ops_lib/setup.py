@@ -16,7 +16,11 @@ requirements = ["torch>=1.4"]
 
 exec(open(osp.join("pointnet2_ops", "_version.py")).read())
 
-os.environ["TORCH_CUDA_ARCH_LIST"] = "3.7+PTX;5.0;6.0;6.1;6.2;7.0;7.5"
+# Update the CUDA architectures to a more modern set
+# For example, '6.0;6.1;7.0;7.5;8.0' for common modern GPUs (Pascal, Volta, Turing, Ampere)
+# You can adjust this based on your GPU architecture.
+os.environ["TORCH_CUDA_ARCH_LIST"] = "6.0;6.1;7.0;7.5;8.0"
+
 setup(
     name="pointnet2_ops",
     version=__version__,
@@ -37,3 +41,4 @@ setup(
     cmdclass={"build_ext": BuildExtension},
     include_package_data=True,
 )
+

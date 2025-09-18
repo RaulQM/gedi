@@ -3,9 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchgeometry as tgm
 import numpy as np
-import open3d.ml.torch as ml3d
-from backbones.pointnet2_ops_lib.pointnet2_ops.pointnet2_modules import PointnetSAModule
-
+# import open3d.ml.torch as ml3d
+from .backbones.pointnet2_ops_lib.pointnet2_ops.pointnet2_modules import PointnetSAModule
+from time import time
+import torch.jit
+from torch.cuda.amp import autocast
 
 class tnet(nn.Module):
 
@@ -224,16 +226,40 @@ class GeDi:
                        device='cpu')
 
         self.gedi_net = PointNet2Feature(dim=self.dim)
-        self.gedi_net.load_state_dict(torch.load(config['fchkpt_gedi_net'])['pnet_model_state_dict'])
+        self.gedi_net.load_state_dict(torch.load(config['fchkpt_gedi_net'], weights_only=False)['pnet_model_state_dict'])
         self.gedi_net.cuda().eval()
+        
+    def radius_search_pytorch(self, pcd, pts, radius):
+        """
+        Perform a radius search using pairwise distance and find points within the given radius.
+        Args:
+            pcd: (N, 3) tensor, the point cloud to search within
+            pts: (M, 3) tensor, the query points
+            radius: float, the search radius
+        Returns:
+            A tuple of indices of the points within the radius and the row splits.
+        """
+        
+        # Compute pairwise distance matrix (M x N)
+        dist_matrix = torch.cdist(pts, pcd)
+        
+        # Reshape the radius tensor to be (M, 1) so it can be broadcasted with dist_matrix
+        radius = radius.view(-1, 1)
+
+        # Find the points within the radius for each query point
+        within_radius = dist_matrix <= radius
+
+        # Get indices of points within the radius
+        indices = [torch.nonzero(within_radius[i]).squeeze(1) for i in range(within_radius.shape[0])]
+
+        return indices
 
     def compute(self, pts, pcd):
-
+    
         radii = self.r_lrf * torch.ones((len(pts)))
 
-        out = ml3d.ops.radius_search(pcd, pts, radii,
-                                     points_row_splits=torch.LongTensor([0, len(pcd)]),
-                                     queries_row_splits=torch.LongTensor([0, len(pts)]))
+        # Use the new radius search function
+        out = self.radius_search_pytorch(pcd, pts, radii)
 
         pcd_desc = np.empty((len(pts), self.dim))
 
@@ -249,7 +275,8 @@ class GeDi:
             j = 0
             for i in range(i_start, i_end):
 
-                _inds = out[0][out[1][i]:out[1][i + 1]]
+                _inds = out[i]
+
                 try:
                     inds = np.random.choice(_inds.numpy(), size=self.samples_per_patch_lrf, replace=False)
                 except:
@@ -259,18 +286,17 @@ class GeDi:
                 x[j] = pcd[inds].T
 
                 j += 1
-
+            
             x = torch.Tensor(x)
 
             patch = self.lrf(pts[i_start:i_end], x)
-
+                        
             with torch.no_grad():
                 f = self.gedi_net(patch.cuda())
 
             pcd_desc[i_start:i_end] = f.cpu().detach().numpy()[:i_end - i_start]
-
+            
         return pcd_desc
-
 
 if __name__ == '__main__':
 

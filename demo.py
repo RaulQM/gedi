@@ -2,6 +2,23 @@ import torch
 import numpy as np
 import open3d as o3d
 from gedi import GeDi
+from sklearn.metrics.pairwise import cosine_similarity as cosim
+from time import time
+from pointnet2_ops.pointnet2_utils import furthest_point_sample, gather_operation
+
+def compare_descriptors(descriptor1, descriptor2):
+    # Assuming descriptor1 and descriptor2 are numpy arrays
+    descriptor1 = descriptor1.reshape(1, -1)  # Reshape to a 1D array
+    descriptor2 = descriptor2.reshape(1, -1)
+
+    # Normalize descriptors to unit length
+    descriptor1 = descriptor1 / np.linalg.norm(descriptor1)
+    descriptor2 = descriptor2 / np.linalg.norm(descriptor2)
+
+    # Calculate cosine similarity
+    similarity = cosim(descriptor1, descriptor2)
+        
+    return similarity
 
 '''
 demo to show the registration between two point clouds using GeDi descriptors
@@ -17,42 +34,69 @@ config = {'dim': 32,                                            # descriptor out
           'r_lrf': .5,                                          # LRF radius
           'fchkpt_gedi_net': 'data/chkpts/3dmatch/chkpt.tar'}   # path to checkpoint
 
-voxel_size = .01
+voxel_size = 0.01
 patches_per_pair = 5000
 
 # initialising class
 gedi = GeDi(config=config)
 
 # getting a pair of point clouds
-pcd0 = o3d.io.read_point_cloud('data/assets/threed_match_7-scenes-redkitchen_cloud_bin_0.ply')
-pcd1 = o3d.io.read_point_cloud('data/assets/threed_match_7-scenes-redkitchen_cloud_bin_5.ply')
+pcd0_ = o3d.io.read_point_cloud('/media/raul/PortableSSD/Raul/models_reconst/obj_01/ply_01.ply')
+pcd1_ = o3d.io.read_point_cloud('/media/raul/PortableSSD/Raul/models_cad/obj_01.ply')
 
-pcd0.paint_uniform_color([1, 0.706, 0])
-pcd1.paint_uniform_color([0, 0.651, 0.929])
+pcd0_.paint_uniform_color([1, 0.706, 0])
+pcd1_.paint_uniform_color([0, 0.651, 0.929])
 
 # estimating normals (only for visualisation)
-pcd0.estimate_normals()
-pcd1.estimate_normals()
-
-o3d.visualization.draw_geometries([pcd0, pcd1])
-
-# randomly sampling some points from the point cloud
-inds0 = np.random.choice(np.asarray(pcd0.points).shape[0], patches_per_pair, replace=False)
-inds1 = np.random.choice(np.asarray(pcd1.points).shape[0], patches_per_pair, replace=False)
-
-pts0 = torch.tensor(np.asarray(pcd0.points)[inds0]).float()
-pts1 = torch.tensor(np.asarray(pcd1.points)[inds1]).float()
+pcd0_.estimate_normals()
+pcd1_.estimate_normals()
 
 # applying voxelisation to the point cloud
-pcd0 = pcd0.voxel_down_sample(voxel_size)
-pcd1 = pcd1.voxel_down_sample(voxel_size)
+voxels = 1
+pcd0_ = pcd0_.voxel_down_sample(voxels)
+pcd1_ = pcd1_.voxel_down_sample(voxels)
+
+o3d.visualization.draw_geometries([pcd0_, pcd1_])
+
+# sampling some points from the point cloud
+resample = lambda points, n: gather_operation(points.transpose(1 , 2).contiguous(), furthest_point_sample(points, n))
+points0 = torch.from_numpy(np.asarray(pcd1_.points).astype(np.float32)).cuda().unsqueeze(0)
+pts0 = resample(points0, patches_per_pair)
+pts0 = torch.squeeze(pts0).T.cpu()
+
+points1 = torch.from_numpy(np.asarray(pcd0_.points).astype(np.float32)).cuda().unsqueeze(0)
+pts1 = resample(points1, patches_per_pair)
+pts1 = torch.squeeze(pts1).T.cpu()
+
+# inds0 = np.random.choice(np.asarray(pcd0_.points).shape[0], patches_per_pair, replace=False)
+# inds1 = np.random.choice(np.asarray(pcd1_.points).shape[0], patches_per_pair, replace=False)
+
+# pts0 = torch.tensor(np.asarray(pcd0_.points)[inds0]).float()
+# pts1 = torch.tensor(np.asarray(pcd1_.points)[inds1]).float()
+
+o3d.visualization.draw_geometries([pcd0_, pcd1_])
+
+# applying voxelisation to the point cloud
+pcd0 = pcd0_.voxel_down_sample(voxel_size)
+pcd1 = pcd1_.voxel_down_sample(voxel_size)
 
 _pcd0 = torch.tensor(np.asarray(pcd0.points)).float()
 _pcd1 = torch.tensor(np.asarray(pcd1.points)).float()
 
+t1 = time()
+
 # computing descriptors
 pcd0_desc = gedi.compute(pts=pts0, pcd=_pcd0)
+
+print(time() - t1)
+
+t2 = time()
+
 pcd1_desc = gedi.compute(pts=pts1, pcd=_pcd1)
+
+print(time() - t2)
+
+ptc_sim = compare_descriptors(pcd0_desc, pcd1_desc)
 
 # preparing format for open3d ransac
 pcd0_dsdv = o3d.pipelines.registration.Feature()
@@ -81,5 +125,5 @@ est_result01 = o3d.pipelines.registration.registration_ransac_based_on_feature_m
     criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(50000, 1000))
 
 # applying estimated transformation
-pcd0.transform(est_result01.transformation)
-o3d.visualization.draw_geometries([pcd0, pcd1])
+pcd0_.transform(est_result01.transformation)
+o3d.visualization.draw_geometries([pcd0_, pcd1_])
